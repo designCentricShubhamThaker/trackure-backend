@@ -15,7 +15,12 @@ const GlassItemSchema = new mongoose.Schema({
     decoration_number: String
   },
   team: String,
-  status: { type: String, enum: ['Pending', 'Completed'], default: 'Pending' },
+  status: {
+    type: String,
+    enum: ['Pending', 'In Progress', 'Completed'],
+    default: 'Pending'
+  },
+
   team_tracking: teamTrackingSchema
 }, { timestamps: true });
 

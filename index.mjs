@@ -82,7 +82,7 @@ io.on('connection', (socket) => {
 
     try {
       const { order, assignedTeams, dispatcherName, customerName, orderNumber, timestamp } = orderData;
-      
+
       const baseNotification = {
         type: 'new-order',
         orderNumber,
@@ -102,13 +102,13 @@ io.on('connection', (socket) => {
       assignedTeams.forEach(teamName => {
         if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
           const filteredOrder = filterOrderForTeam(order, teamName);
-          
+
           io.to(teamName).emit('new-order', {
             ...baseNotification,
             message: `New order #${orderNumber} assigned to ${teamName.toUpperCase()} team`,
             orderData: filteredOrder
           });
-          
+
           console.log(`📤 Filtered order sent to ${teamName} team`);
         }
       });
@@ -119,21 +119,68 @@ io.on('connection', (socket) => {
   });
 
 
+  socket.on('team-progress-updated', (progressData) => {
+    console.log('📈 Team progress update received:', {
+      order: progressData.orderNumber,
+      team: progressData.team,
+      item: progressData.itemName
+    });
+
+    try {
+      const {
+        orderNumber,
+        itemName,
+        team,
+        updates,
+        updatedOrder,
+        customerName,
+        dispatcherName,
+        timestamp
+      } = progressData;
+
+      const notificationData = {
+        type: 'team-progress-update',
+        orderNumber,
+        itemName,
+        team: team.toUpperCase(),
+        customerName,
+        dispatcherName,
+        timestamp,
+        updates,
+        orderData: updatedOrder, // This is the key - make sure updatedOrder is included
+        message: `${team.toUpperCase()} team updated progress for ${itemName} in order #${orderNumber}`
+      };
+
+      // Send to all dispatchers (admins)
+      io.to('dispatchers').emit('team-progress-updated', notificationData);
+
+      // Also emit to all connected clients in case dispatcher isn't in dispatchers room
+      socket.broadcast.emit('team-progress-updated', notificationData);
+
+      console.log(`📤 Progress update sent to dispatchers for order #${orderNumber}`);
+      console.log(`📊 Dispatchers room size:`, io.sockets.adapter.rooms.get('dispatchers')?.size || 0);
+
+    } catch (error) {
+      console.error('Error handling team progress update:', error);
+    }
+  });;
+
+
   socket.on('order-edited', (editData) => {
     console.log('✏️ Order edit notification received:', editData.orderNumber);
 
     try {
-      const { 
-        order, 
-        assignedTeams, 
-        dispatcherName, 
-        customerName, 
-        orderNumber, 
+      const {
+        order,
+        assignedTeams,
+        dispatcherName,
+        customerName,
+        orderNumber,
         timestamp,
         editedFields,
         previousAssignedTeams = []
       } = editData;
-      
+
       const baseNotification = {
         type: 'order-edited',
         orderNumber,
@@ -156,19 +203,19 @@ io.on('connection', (socket) => {
       allAffectedTeams.forEach(teamName => {
         if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
           const filteredOrder = filterOrderForTeam(order, teamName);
-          
+
           const hasCurrentAssignments = assignedTeams.includes(teamName);
-          
+
           io.to(teamName).emit('order-updated', {
             ...baseNotification,
-            message: hasCurrentAssignments 
+            message: hasCurrentAssignments
               ? `Order #${orderNumber} assigned to ${teamName.toUpperCase()} team has been updated`
               : `Order #${orderNumber} no longer assigned to ${teamName.toUpperCase()} team`,
             orderData: filteredOrder,
             hasAssignments: hasCurrentAssignments,
             wasRemoved: !hasCurrentAssignments && previousAssignedTeams.includes(teamName)
           });
-          
+
           console.log(`📤 Updated order sent to ${teamName} team (hasAssignments: ${hasCurrentAssignments})`);
         }
       });
@@ -178,12 +225,60 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('order-deleted', (deleteData) => {
+    console.log('🗑️ Order delete notification received:', deleteData.orderNumber);
+
+    try {
+      const {
+        orderId,
+        orderNumber,
+        customerName,
+        dispatcherName,
+        timestamp,
+        assignedTeams = []
+      } = deleteData;
+
+      const baseNotification = {
+        type: 'order-deleted',
+        orderId,
+        orderNumber,
+        customerName,
+        dispatcherName,
+        timestamp,
+        message: `Order #${orderNumber} has been deleted`
+      };
+
+      // Send to all dispatchers
+      io.to('dispatchers').emit('order-deleted', {
+        ...baseNotification
+      });
+
+      assignedTeams.forEach(teamName => {
+        if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
+          io.to(teamName).emit('order-deleted', {
+            ...baseNotification,
+            message: `Order #${orderNumber} assigned to ${teamName.toUpperCase()} team has been deleted`
+          });
+
+          console.log(`📤 Delete notification sent to ${teamName} team`);
+        }
+      });
+
+      console.log(`📤 Order delete notification sent to all teams and dispatchers`);
+
+    } catch (error) {
+      console.error('Error handling order delete notification:', error);
+    }
+  });
+
   function addUserToTeams(socket, userInfo) {
     const { role, team } = userInfo;
 
-    if (role === 'admin') {
+    // Fix: Make sure admin role joins dispatchers room
+    if (role === 'admin' || role === 'dispatcher') {
       teamMembers.dispatchers.add(socket.id);
       socket.join('dispatchers');
+      console.log(`🔌 Admin/Dispatcher joined dispatchers room: ${socket.id}`);
     }
 
     if (team && teamMembers[team]) {
@@ -197,7 +292,6 @@ io.on('connection', (socket) => {
     Object.values(teamMembers).forEach(team => team.delete(socketId));
   }
 
-  // Enhanced filtering - only send team-specific assignments
   function filterOrderForTeam(order, teamName) {
     return {
       ...order,
@@ -209,7 +303,6 @@ io.on('connection', (socket) => {
       })).filter(item => item.team_assignments[teamName]?.length > 0) || []
     };
   }
-
   function broadcastConnectedUsers() {
     const dispatchersList = Array.from(teamMembers.dispatchers).map(socketId => {
       const user = connectedUsers.get(socketId);
@@ -231,7 +324,7 @@ io.on('connection', (socket) => {
           connected: true
         };
       });
-      
+
       teamLists[teamName] = teamUsers;
       allTeamMembers.push(...teamUsers);
     });
