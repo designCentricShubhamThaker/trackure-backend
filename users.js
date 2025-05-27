@@ -56,7 +56,7 @@ export const users = [
     team:"pump"
   },
   {
-    user: "box",
+    user: "box_team",
     password: "pg@box",
     role: "user",
     team:"box"
