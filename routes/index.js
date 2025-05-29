@@ -5,6 +5,7 @@ import capRoutes from './capRoutes.js';
 import boxRoutes from './boxRoutes.js';
 import pumpRoutes from './pumpRoutes.js'; 
 import authRoutes from './authRoutes.js'; 
+import trackingRoutes from './trackingRoutes.js'; 
 
 const router = express.Router();
 
@@ -15,5 +16,6 @@ router.use('/caps', capRoutes);
 router.use('/boxes', boxRoutes);
 router.use('/pumps', pumpRoutes);
 router.use('/auth', authRoutes);
+router.use('/track' , trackingRoutes)
 
 export default router;

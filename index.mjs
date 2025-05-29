@@ -5,7 +5,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import './config/db.js';
 import routes from './routes/index.js';
-import nodemailer from 'nodemailer';
+
 
 dotenv.config();
 
@@ -27,13 +27,7 @@ const io = new Server(httpServer, {
   }
 });
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+
 
 const connectedUsers = new Map();
 const teamMembers = {
@@ -50,24 +44,7 @@ app.get('/', (req, res) => {
   res.send('✅ Pragati Glass Order Management API is Running!');
 });
 
-app.post('/send-tracking-email', async (req, res) => {
-  try {
-    const { to, subject, html } = req.body;
 
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to,
-      subject,
-      html
-    };
-
-    await transporter.sendMail(mailOptions);
-    res.json({ success: true, message: 'Email sent successfully' });
-  } catch (error) {
-    console.error('Email error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
 
 io.on('connection', (socket) => {
   console.log(`🔌 New connection: ${socket.id}`);
