@@ -21,19 +21,6 @@ const createTransporter = () => {
     debug: true,
     logger: true
   });
-
-  // Alternative configuration for other email services:
-  /*
-  return nodemailer.createTransporter({
-    host: 'smtp.your-email-provider.com',
-    port: 587,
-    secure: false,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-  */
 };
 
 router.post('/send-tracking-email', async (req, res) => {
