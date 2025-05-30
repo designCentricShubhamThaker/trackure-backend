@@ -35,8 +35,11 @@ const teamMembers = {
   glass: new Set(),
   caps: new Set(),
   boxes: new Set(),
-  pumps: new Set()
+  pumps: new Set(),
+
 };
+
+const trackingRooms = new Map();
 
 app.use('/api', routes);
 
@@ -276,121 +279,55 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('join-tracking', (data) => {
+    const { orderId, userType } = data; // userType: 'admin' or 'customer'
 
-  socket.on('customer-tracking-update', (trackingData) => {
-    console.log('📍 Customer tracking update received:', trackingData.order_number);
+    if (!orderId) {
+      console.log('❌ No orderId provided for tracking');
+      return;
+    }
+
+    const roomName = `tracking-${orderId}`;
+    socket.join(roomName);
+
+
+    
+    if (!trackingRooms.has(orderId)) {
+      trackingRooms.set(orderId, new Set());
+    }
+    trackingRooms.get(orderId).add(socket.id);
+
+    console.log(`📍 ${userType} joined tracking room: ${roomName}`);
+
+    // Send confirmation
+    socket.emit('tracking-joined', {
+      orderId,
+      roomName,
+      userType,
+      success: true
+    });
+  });
+
+  // Add this new event handler for tracking updates from admin
+  socket.on('tracking-step-updated', (trackingData) => {
+    console.log('📈 Tracking step update received:', trackingData.orderId);
 
     try {
-      const {
-        order_number,
-        currentStep,
-        completionPercentage,
-        customerName,
-        stepTitle,
-        stepDescription,
-        totalSteps,
-        orderStatus,
-        customerAddress,
-        customerPhone,
-        customerEmail,
-        orderDate,
-        estimatedDelivery,
-        totalAmount,
-        items,
-        paymentMethod,
-        timestamp
-      } = trackingData;
+      const { orderId } = trackingData;
+      const roomName = `tracking-${orderId}`;
 
-      const completeNotificationData = {
-        type: 'tracking-update',
-        order_number,
-        currentStep,
-        completionPercentage,
-        customerName,
-        stepTitle,
-        stepDescription,
-        totalSteps,
-        orderStatus,
-        customerAddress,
-        customerPhone,
-        customerEmail,
-        orderDate,
-        estimatedDelivery,
-        totalAmount,
-        items,
-        paymentMethod,
-        timestamp: timestamp || new Date().toISOString(),
-        lastUpdated: new Date().toISOString(),
-        message: `Order #${order_number} tracking updated - ${stepTitle || `Step ${currentStep}`}`
-      };
+      // Broadcast to all users in the tracking room (including customers)
+      io.to(roomName).emit('tracking-updated', {
+        type: 'tracking-step-update',
+        ...trackingData,
+        timestamp: new Date().toISOString()
+      });
 
-      // FIXED: Primary method - emit to specific tracking room
-      const trackingRoom = `tracking-${order_number}`;
-      io.to(trackingRoom).emit('tracking-update', completeNotificationData);
-      console.log(`📍 Emitted 'tracking-update' to room: ${trackingRoom}`);
-
-      // FIXED: Secondary method - emit customer-specific event
-      io.to(trackingRoom).emit('customer-tracking-update', completeNotificationData);
-      console.log(`📍 Emitted 'customer-tracking-update' to room: ${trackingRoom}`);
-
-      // FIXED: Tertiary method - order-specific event (fallback)
-      io.emit(`tracking-${order_number}`, completeNotificationData);
-      console.log(`📍 Emitted 'tracking-${order_number}' globally`);
-
-      // Send to dispatchers for monitoring       
-      io.to('dispatchers').emit('tracking-update', completeNotificationData);
-
-      console.log(`📍 Comprehensive tracking update broadcast for order #${order_number}`);
-      console.log(`📊 Tracking room '${trackingRoom}' size:`, io.sockets.adapter.rooms.get(trackingRoom)?.size || 0);
+      console.log(`📤 Tracking update sent to room: ${roomName}`);
 
     } catch (error) {
       console.error('Error handling tracking update:', error);
     }
-  });
-
-  socket.on('join-tracking', (orderNumber) => {
-    console.log(`👥 Client ${socket.id} joining tracking room for order: ${orderNumber}`);
-    const trackingRoom = `tracking-${orderNumber}`;
-    socket.join(trackingRoom);
-
-    // Confirm joining     
-    socket.emit('tracking-joined', {
-      success: true,
-      orderNumber,
-      room: trackingRoom,
-      message: `Joined tracking updates for order #${orderNumber}`
-    });
-
-    console.log(`✅ Client ${socket.id} successfully joined room: ${trackingRoom}`);
-    console.log(`📊 Room '${trackingRoom}' now has ${io.sockets.adapter.rooms.get(trackingRoom)?.size || 0} members`);
-  });
-
-  socket.on('leave-tracking', (orderNumber) => {
-    console.log(`👋 Client ${socket.id} leaving tracking room for order: ${orderNumber}`);
-    const trackingRoom = `tracking-${orderNumber}`;
-    socket.leave(trackingRoom);
-
-    socket.emit('tracking-left', {
-      success: true,
-      orderNumber,
-      room: trackingRoom,
-      message: `Left tracking updates for order #${orderNumber}`
-    });
-
-    console.log(`👋 Client ${socket.id} successfully left room: ${trackingRoom}`);
-  });
-
-  // ADDED: Handle requests for current tracking data
-  socket.on('request-tracking-update', (data) => {
-    console.log(`🔄 Client ${socket.id} requesting tracking data for order: ${data.order_number}`);
-
-    // You can emit current data if you have it stored
-    // For now, just acknowledge the request
-    socket.emit('tracking-update-requested', {
-      success: true,
-      order_number: data.order_number,
-      message: `Tracking update requested for order #${data.order_number}`
-    });
   });
 
 
@@ -428,49 +365,25 @@ io.on('connection', (socket) => {
       })).filter(item => item.team_assignments[teamName]?.length > 0) || []
     };
   }
-  function broadcastConnectedUsers() {
-    const dispatchersList = Array.from(teamMembers.dispatchers).map(socketId => {
-      const user = connectedUsers.get(socketId);
-      return {
-        userId: user?.userId || socketId,
-        connected: true
-      };
-    });
 
-    const teamLists = {};
-    const allTeamMembers = [];
 
-    ['glass', 'caps', 'boxes', 'pumps'].forEach(teamName => {
-      const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
-        const user = connectedUsers.get(socketId);
-        return {
-          userId: user?.userId || socketId,
-          team: teamName,
-          connected: true
-        };
-      });
+  socket.on('disconnect', () => {
+    console.log(`🔌 User disconnected: ${socket.id}`);
 
-      teamLists[teamName] = teamUsers;
-      allTeamMembers.push(...teamUsers);
-    });
+    // Existing cleanup code...
+    removeUserFromTeams(socket.id);
+    connectedUsers.delete(socket.id);
 
-    // Send to dispatchers
-    io.to('dispatchers').emit('connected-users', {
-      dispatchers: dispatchersList,
-      teamMembers: allTeamMembers,
-      teams: teamLists
-    });
-
-    // Send to each team
-    Object.keys(teamLists).forEach(teamName => {
-      if (teamMembers[teamName].size > 0) {
-        io.to(teamName).emit('connected-users', {
-          teamMembers: teamLists[teamName],
-          dispatchers: dispatchersList
-        });
+    // Clean up tracking rooms
+    trackingRooms.forEach((socketSet, orderId) => {
+      socketSet.delete(socket.id);
+      if (socketSet.size === 0) {
+        trackingRooms.delete(orderId);
       }
     });
-  }
+
+    broadcastConnectedUsers();
+  });
 
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${socket.id}`);
