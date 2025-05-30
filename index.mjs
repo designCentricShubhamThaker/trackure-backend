@@ -36,10 +36,9 @@ const teamMembers = {
   caps: new Set(),
   boxes: new Set(),
   pumps: new Set(),
-
+  
 };
 
-const trackingRooms = new Map();
 
 app.use('/api', routes);
 
@@ -279,56 +278,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('join-tracking', (data) => {
-    const { orderId, userType } = data; // userType: 'admin' or 'customer'
-
-    if (!orderId) {
-      console.log('❌ No orderId provided for tracking');
-      return;
-    }
-
-    const roomName = `tracking-${orderId}`;
-    socket.join(roomName);
 
 
-    
-    if (!trackingRooms.has(orderId)) {
-      trackingRooms.set(orderId, new Set());
-    }
-    trackingRooms.get(orderId).add(socket.id);
-
-    console.log(`📍 ${userType} joined tracking room: ${roomName}`);
-
-    // Send confirmation
-    socket.emit('tracking-joined', {
-      orderId,
-      roomName,
-      userType,
-      success: true
-    });
-  });
-
-
-  socket.on('tracking-step-updated', (trackingData) => {
-    console.log('📈 Tracking step update received:', trackingData.orderId);
-
-    try {
-      const { orderId } = trackingData;
-      const roomName = `tracking-${orderId}`;
-
-      // Broadcast to all users in the tracking room (including customers)
-      io.to(roomName).emit('tracking-updated', {
-        type: 'tracking-step-update',
-        ...trackingData,
-        timestamp: new Date().toISOString()
-      });
-
-      console.log(`📤 Tracking update sent to room: ${roomName}`);
-
-    } catch (error) {
-      console.error('Error handling tracking update:', error);
-    }
-  });
 
   function addUserToTeams(socket, userInfo) {
     const { role, team } = userInfo;
@@ -362,27 +313,56 @@ io.on('connection', (socket) => {
       })).filter(item => item.team_assignments[teamName]?.length > 0) || []
     };
   }
+  function broadcastConnectedUsers() {
+    const dispatchersList = Array.from(teamMembers.dispatchers).map(socketId => {
+      const user = connectedUsers.get(socketId);
+      return {
+        userId: user?.userId || socketId,
+        connected: true
+      };
+    });
 
+    const teamLists = {};
+    const allTeamMembers = [];
+
+    ['glass', 'caps', 'boxes', 'pumps'].forEach(teamName => {
+      const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
+        const user = connectedUsers.get(socketId);
+        return {
+          userId: user?.userId || socketId,
+          team: teamName,
+          connected: true
+        };
+      });
+
+      teamLists[teamName] = teamUsers;
+      allTeamMembers.push(...teamUsers);
+    });
+
+    // Send to dispatchers
+    io.to('dispatchers').emit('connected-users', {
+      dispatchers: dispatchersList,
+      teamMembers: allTeamMembers,
+      teams: teamLists
+    });
+
+    // Send to each team
+    Object.keys(teamLists).forEach(teamName => {
+      if (teamMembers[teamName].size > 0) {
+        io.to(teamName).emit('connected-users', {
+          teamMembers: teamLists[teamName],
+          dispatchers: dispatchersList
+        });
+      }
+    });
+  }
 
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${socket.id}`);
-
-    // Existing cleanup code...
     removeUserFromTeams(socket.id);
     connectedUsers.delete(socket.id);
-
-    // Clean up tracking rooms
-    trackingRooms.forEach((socketSet, orderId) => {
-      socketSet.delete(socket.id);
-      if (socketSet.size === 0) {
-        trackingRooms.delete(orderId);
-      }
-    });
-
     broadcastConnectedUsers();
   });
-
-  
 });
 
 const PORT = process.env.PORT || 5000;
