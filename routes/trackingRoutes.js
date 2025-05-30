@@ -3,7 +3,7 @@ import nodemailer from 'nodemailer';
 
 const router = express.Router();
 
-// Create transporter with better error handling
+
 const createTransporter = () => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     console.error('Missing email credentials: EMAIL_USER or EMAIL_PASS not set');
@@ -11,12 +11,12 @@ const createTransporter = () => {
   }
 
   return nodemailer.createTransport({
-    service: 'gmail', // or use host/port for other services
+    service: 'gmail', 
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS
     },
-    // Add these for better security and debugging
+
     secure: true,
     debug: true,
     logger: true
@@ -27,7 +27,7 @@ router.post('/send-tracking-email', async (req, res) => {
   try {
     const { to, subject, html } = req.body;
 
-    // Validate request body
+
     if (!to || !subject || !html) {
       return res.status(400).json({ 
         success: false, 
@@ -35,7 +35,6 @@ router.post('/send-tracking-email', async (req, res) => {
       });
     }
 
-    // Create transporter
     const transporter = createTransporter();
     if (!transporter) {
       return res.status(500).json({ 
@@ -44,7 +43,6 @@ router.post('/send-tracking-email', async (req, res) => {
       });
     }
 
-    // Verify transporter connection
     try {
       await transporter.verify();
     } catch (verifyError) {

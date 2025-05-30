@@ -278,29 +278,123 @@ io.on('connection', (socket) => {
 
 
   socket.on('customer-tracking-update', (trackingData) => {
-  console.log('📍 Customer tracking update received:', trackingData.orderId);
-  
-  try {
-    const { orderId, currentStep, completionPercentage, customerName, timestamp } = trackingData;
-    
-    const notificationData = {
-      type: 'tracking-update',
-      orderId,
-      currentStep,
-      completionPercentage,
-      customerName,
-      timestamp,
-      message: `Order #${orderId} tracking updated - Step ${currentStep}`
-    };
+    console.log('📍 Customer tracking update received:', trackingData.order_number);
 
-    // Emit to all clients listening for this specific order
-    io.emit(`tracking-${orderId}`, notificationData);
-    
-    console.log(`📍 Tracking update broadcast for order #${orderId}`);
-  } catch (error) {
-    console.error('Error handling tracking update:', error);
-  }
-});
+    try {
+      const {
+        order_number,
+        currentStep,
+        completionPercentage,
+        customerName,
+        stepTitle,
+        stepDescription,
+        totalSteps,
+        orderStatus,
+        customerAddress,
+        customerPhone,
+        customerEmail,
+        orderDate,
+        estimatedDelivery,
+        totalAmount,
+        items,
+        paymentMethod,
+        timestamp
+      } = trackingData;
+
+      const completeNotificationData = {
+        type: 'tracking-update',
+        order_number,
+        currentStep,
+        completionPercentage,
+        customerName,
+        stepTitle,
+        stepDescription,
+        totalSteps,
+        orderStatus,
+        customerAddress,
+        customerPhone,
+        customerEmail,
+        orderDate,
+        estimatedDelivery,
+        totalAmount,
+        items,
+        paymentMethod,
+        timestamp: timestamp || new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+        message: `Order #${order_number} tracking updated - ${stepTitle || `Step ${currentStep}`}`
+      };
+
+      // FIXED: Primary method - emit to specific tracking room
+      const trackingRoom = `tracking-${order_number}`;
+      io.to(trackingRoom).emit('tracking-update', completeNotificationData);
+      console.log(`📍 Emitted 'tracking-update' to room: ${trackingRoom}`);
+
+      // FIXED: Secondary method - emit customer-specific event
+      io.to(trackingRoom).emit('customer-tracking-update', completeNotificationData);
+      console.log(`📍 Emitted 'customer-tracking-update' to room: ${trackingRoom}`);
+
+      // FIXED: Tertiary method - order-specific event (fallback)
+      io.emit(`tracking-${order_number}`, completeNotificationData);
+      console.log(`📍 Emitted 'tracking-${order_number}' globally`);
+
+      // Send to dispatchers for monitoring       
+      io.to('dispatchers').emit('tracking-update', completeNotificationData);
+
+      console.log(`📍 Comprehensive tracking update broadcast for order #${order_number}`);
+      console.log(`📊 Tracking room '${trackingRoom}' size:`, io.sockets.adapter.rooms.get(trackingRoom)?.size || 0);
+
+    } catch (error) {
+      console.error('Error handling tracking update:', error);
+    }
+  });
+
+  socket.on('join-tracking', (orderNumber) => {
+    console.log(`👥 Client ${socket.id} joining tracking room for order: ${orderNumber}`);
+    const trackingRoom = `tracking-${orderNumber}`;
+    socket.join(trackingRoom);
+
+    // Confirm joining     
+    socket.emit('tracking-joined', {
+      success: true,
+      orderNumber,
+      room: trackingRoom,
+      message: `Joined tracking updates for order #${orderNumber}`
+    });
+
+    console.log(`✅ Client ${socket.id} successfully joined room: ${trackingRoom}`);
+    console.log(`📊 Room '${trackingRoom}' now has ${io.sockets.adapter.rooms.get(trackingRoom)?.size || 0} members`);
+  });
+
+  socket.on('leave-tracking', (orderNumber) => {
+    console.log(`👋 Client ${socket.id} leaving tracking room for order: ${orderNumber}`);
+    const trackingRoom = `tracking-${orderNumber}`;
+    socket.leave(trackingRoom);
+
+    socket.emit('tracking-left', {
+      success: true,
+      orderNumber,
+      room: trackingRoom,
+      message: `Left tracking updates for order #${orderNumber}`
+    });
+
+    console.log(`👋 Client ${socket.id} successfully left room: ${trackingRoom}`);
+  });
+
+  // ADDED: Handle requests for current tracking data
+  socket.on('request-tracking-update', (data) => {
+    console.log(`🔄 Client ${socket.id} requesting tracking data for order: ${data.order_number}`);
+
+    // You can emit current data if you have it stored
+    // For now, just acknowledge the request
+    socket.emit('tracking-update-requested', {
+      success: true,
+      order_number: data.order_number,
+      message: `Tracking update requested for order #${data.order_number}`
+    });
+  });
+
+
+
 
   function addUserToTeams(socket, userInfo) {
     const { role, team } = userInfo;
