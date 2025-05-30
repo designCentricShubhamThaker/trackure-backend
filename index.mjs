@@ -308,7 +308,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Add this new event handler for tracking updates from admin
+
   socket.on('tracking-step-updated', (trackingData) => {
     console.log('📈 Tracking step update received:', trackingData.orderId);
 
@@ -329,9 +329,6 @@ io.on('connection', (socket) => {
       console.error('Error handling tracking update:', error);
     }
   });
-
-
-
 
   function addUserToTeams(socket, userInfo) {
     const { role, team } = userInfo;
@@ -385,12 +382,7 @@ io.on('connection', (socket) => {
     broadcastConnectedUsers();
   });
 
-  socket.on('disconnect', () => {
-    console.log(`🔌 User disconnected: ${socket.id}`);
-    removeUserFromTeams(socket.id);
-    connectedUsers.delete(socket.id);
-    broadcastConnectedUsers();
-  });
+  
 });
 
 const PORT = process.env.PORT || 5000;
