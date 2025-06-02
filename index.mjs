@@ -27,8 +27,6 @@ const io = new Server(httpServer, {
   }
 });
 
-
-
 const connectedUsers = new Map();
 const teamMembers = {
   dispatchers: new Set(),
@@ -36,8 +34,11 @@ const teamMembers = {
   caps: new Set(),
   boxes: new Set(),
   pumps: new Set(),
-  
+  customers: new Set()
+
 };
+
+const trackingDataStore = new Map();
 
 
 app.use('/api', routes);
@@ -232,54 +233,92 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('order-deleted', (deleteData) => {
-    console.log('🗑️ Order delete notification received:', deleteData.orderNumber);
+ 
 
-    try {
-      const {
-        orderId,
-        orderNumber,
-        customerName,
-        dispatcherName,
-        timestamp,
-        assignedTeams = []
-      } = deleteData;
+  socket.on('join-order-tracking', (trackingData) => {
+    const { orderId, customerInfo } = trackingData;
 
-      const baseNotification = {
-        type: 'order-deleted',
+    if (orderId) {
+      const roomName = `order_${orderId}`;
+      socket.join(roomName);
+
+      // Store customer connection info
+      const customerData = {
+        socketId: socket.id,
         orderId,
-        orderNumber,
-        customerName,
-        dispatcherName,
-        timestamp,
-        message: `Order #${orderNumber} has been deleted`
+        customerInfo,
+        connected: true,
+        role: 'customer' // Add role for customer
       };
 
-      // Send to all dispatchers
-      io.to('dispatchers').emit('order-deleted', {
-        ...baseNotification
+      customerOrderRooms.set(socket.id, { orderId, roomName });
+      teamMembers.customers.add(socket.id);
+      connectedUsers.set(socket.id, customerData);
+
+      console.log(`🛍️ Customer joined order tracking room: ${roomName}`);
+
+      // Send current tracking data immediately
+      const currentTracking = getTrackingData(orderId);
+      if (currentTracking) {
+        socket.emit('order-status-updated', {
+          type: 'initial-status',
+          orderId,
+          ...currentTracking,
+          timestamp: new Date().toISOString()
+        });
+        console.log(`📤 Sent current tracking data to customer: ${orderId}`);
+      }
+
+      // Confirm connection to customer
+      socket.emit('tracking-connected', {
+        success: true,
+        orderId,
+        message: 'Connected to order tracking',
+        trackingData: currentTracking
       });
 
-      assignedTeams.forEach(teamName => {
-        if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
-          io.to(teamName).emit('order-deleted', {
-            ...baseNotification,
-            message: `Order #${orderNumber} assigned to ${teamName.toUpperCase()} team has been deleted`
-          });
-
-          console.log(`📤 Delete notification sent to ${teamName} team`);
-        }
+      // Notify dispatchers about customer joining
+      socket.to('dispatchers').emit('customer-joined-tracking', {
+        orderId,
+        customerInfo,
+        timestamp: new Date().toISOString()
       });
-
-      console.log(`📤 Order delete notification sent to all teams and dispatchers`);
-
-    } catch (error) {
-      console.error('Error handling order delete notification:', error);
     }
   });
 
+  socket.on('tracking-update', (updateData) => {
+    console.log('📍 Tracking update received:', updateData);
 
+    try {
+      const { orderId, trackingData } = updateData;
 
+      if (orderId) {
+        // Save to server storage
+        saveTrackingData(orderId, trackingData);
+
+        const roomName = `order_${orderId}`;
+
+        // Send to customers in the order room
+        io.to(roomName).emit('order-status-updated', {
+          type: 'tracking-update',
+          orderId,
+          ...trackingData,
+          timestamp: new Date().toISOString()
+        });
+
+        console.log(`📤 Tracking update sent to room: ${roomName}`);
+
+        // Also send to dispatchers for monitoring
+        io.to('dispatchers').emit('customer-tracking-update', {
+          orderId,
+          trackingData,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('Error handling tracking update:', error);
+    }
+  });
 
   function addUserToTeams(socket, userInfo) {
     const { role, team } = userInfo;
@@ -291,6 +330,13 @@ io.on('connection', (socket) => {
       console.log(`🔌 Admin/Dispatcher joined dispatchers room: ${socket.id}`);
     }
 
+    // Add customer role handling
+    if (role === 'customer') {
+      teamMembers.customers.add(socket.id);
+      socket.join('customers');
+      console.log(`🔌 Customer joined customers room: ${socket.id}`);
+    }
+
     if (team && teamMembers[team]) {
       teamMembers[team].add(socket.id);
       socket.join(team);
@@ -300,6 +346,11 @@ io.on('connection', (socket) => {
 
   function removeUserFromTeams(socketId) {
     Object.values(teamMembers).forEach(team => team.delete(socketId));
+
+    // Clean up customer order room tracking
+    if (customerOrderRooms.has(socketId)) {
+      customerOrderRooms.delete(socketId);
+    }
   }
 
   function filterOrderForTeam(order, teamName) {
@@ -313,52 +364,52 @@ io.on('connection', (socket) => {
       })).filter(item => item.team_assignments[teamName]?.length > 0) || []
     };
   }
-  function broadcastConnectedUsers() {
-    const dispatchersList = Array.from(teamMembers.dispatchers).map(socketId => {
-      const user = connectedUsers.get(socketId);
-      return {
-        userId: user?.userId || socketId,
-        connected: true
-      };
-    });
-
-    const teamLists = {};
-    const allTeamMembers = [];
-
-    ['glass', 'caps', 'boxes', 'pumps'].forEach(teamName => {
-      const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
-        const user = connectedUsers.get(socketId);
-        return {
-          userId: user?.userId || socketId,
-          team: teamName,
-          connected: true
-        };
-      });
-
-      teamLists[teamName] = teamUsers;
-      allTeamMembers.push(...teamUsers);
-    });
-
-    // Send to dispatchers
-    io.to('dispatchers').emit('connected-users', {
-      dispatchers: dispatchersList,
-      teamMembers: allTeamMembers,
-      teams: teamLists
-    });
-
-    // Send to each team
-    Object.keys(teamLists).forEach(teamName => {
-      if (teamMembers[teamName].size > 0) {
-        io.to(teamName).emit('connected-users', {
-          teamMembers: teamLists[teamName],
-          dispatchers: dispatchersList
-        });
-      }
-    });
-  }
 
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${socket.id}`);
+
+    if (customerOrderRooms.has(socket.id)) {
+      const { orderId } = customerOrderRooms.get(socket.id);
+      console.log(`🛍️ Customer disconnected from order tracking: ${orderId}`);
+    }
+
+    removeUserFromTeams(socket.id);
+    connectedUsers.delete(socket.id);
+    broadcastConnectedUsers();
+  });
+
+  function getTrackingData(orderId) {
+    return trackingDataStore.get(orderId) || null;
+  }
+
+  // Add this helper function to save tracking data
+  function saveTrackingData(orderId, trackingData) {
+    trackingDataStore.set(orderId, {
+      ...trackingData,
+      lastUpdated: new Date().toISOString()
+    });
+    console.log(`💾 Saved tracking data for order: ${orderId}`);
+  }
+
+
+  socket.on('disconnect', () => {
+    console.log(`🔌 User disconnected: ${socket.id}`);
+
+    // Handle customer order tracking cleanup
+    if (customerOrderRooms.has(socket.id)) {
+      const { orderId, customerInfo } = customerOrderRooms.get(socket.id);
+      console.log(`🛍️ Customer disconnected from order tracking: ${orderId}`);
+
+      // Notify dispatchers about customer leaving
+      socket.to('dispatchers').emit('customer-left-tracking', {
+        orderId,
+        customerInfo,
+        timestamp: new Date().toISOString()
+      });
+
+      customerOrderRooms.delete(socket.id);
+    }
+
     removeUserFromTeams(socket.id);
     connectedUsers.delete(socket.id);
     broadcastConnectedUsers();
