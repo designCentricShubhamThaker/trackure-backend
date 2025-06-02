@@ -37,4 +37,4 @@ const DeliveryTrackingSchema = new mongoose.Schema({
   timestamps: true
 });
 
-const Tracking = mongoose.model('DeliveryTrackinng', DeliveryTrackingSchema);
+export default  mongoose.model('Tracking', DeliveryTrackingSchema);
