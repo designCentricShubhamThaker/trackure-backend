@@ -6,7 +6,6 @@ import { Server } from 'socket.io';
 import './config/db.js';
 import routes from './routes/index.js';
 
-
 dotenv.config();
 
 const app = express();
@@ -34,12 +33,8 @@ const teamMembers = {
   caps: new Set(),
   boxes: new Set(),
   pumps: new Set(),
-  customers: new Set()
-
+  customers: new Map()
 };
-
-const trackingDataStore = new Map();
-
 
 app.use('/api', routes);
 
@@ -47,13 +42,14 @@ app.get('/', (req, res) => {
   res.send('✅ Pragati Glass Order Management API is Running!');
 });
 
-
-
+// FIXED: Remove the nested io.on('connection') - there should only be ONE
 io.on('connection', (socket) => {
   console.log(`🔌 New connection: ${socket.id}`);
 
-  const { userId, role, team } = socket.handshake.query;
-  if (userId && role) {
+  const { userId, role, team, customerEmail, orderId } = socket.handshake.query;
+  
+  // Handle regular users (dispatchers, team members)
+  if (userId && role && role !== 'customer') {
     const userInfo = {
       socketId: socket.id,
       userId,
@@ -67,22 +63,72 @@ io.on('connection', (socket) => {
     broadcastConnectedUsers();
   }
 
-  socket.on('register', (userData) => {
-    const { userId, role, team } = userData;
-    const userInfo = {
+  // FIXED: Handle customer connections properly
+  if (role === 'customer' && orderId) {
+    const customerInfo = {
       socketId: socket.id,
-      userId: userId || socket.id,
-      role,
-      team: team?.toLowerCase().trim(),
+      orderId,
+      customerEmail: customerEmail || 'anonymous',
+      role: 'customer',
       connected: true
     };
 
-    removeUserFromTeams(socket.id);
-    connectedUsers.set(socket.id, userInfo);
-    addUserToTeams(socket, userInfo);
+    connectedUsers.set(socket.id, customerInfo);
 
-    socket.emit('registered', { success: true, user: userInfo });
-    broadcastConnectedUsers();
+    // Add to customer tracking
+    if (!teamMembers.customers.has(orderId)) {
+      teamMembers.customers.set(orderId, new Set());
+    }
+    teamMembers.customers.get(orderId).add(socket.id);
+
+    console.log(`👤 Customer connected for order ${orderId}`);
+    
+    // Send confirmation to customer
+    socket.emit('connected', { 
+      success: true, 
+      orderId, 
+      message: 'Connected to order tracking' 
+    });
+  }
+
+  socket.on('register', (userData) => {
+    const { userId, role, team, orderId, customerEmail } = userData;
+
+    if (role === 'customer' && orderId) {
+      const customerInfo = {
+        socketId: socket.id,
+        orderId,
+        customerEmail: customerEmail || 'anonymous',
+        role: 'customer',
+        connected: true
+      };
+
+      connectedUsers.set(socket.id, customerInfo);
+
+      if (!teamMembers.customers.has(orderId)) {
+        teamMembers.customers.set(orderId, new Set());
+      }
+      teamMembers.customers.get(orderId).add(socket.id);
+
+      socket.emit('registered', { success: true, user: customerInfo });
+      console.log(`👤 Customer registered for order ${orderId}`);
+    } else {
+      // Your existing logic unchanged
+      const userInfo = {
+        socketId: socket.id,
+        userId: userId || socket.id,
+        role,
+        team: team?.toLowerCase().trim(),
+        connected: true
+      };
+
+      removeUserFromTeams(socket.id);
+      connectedUsers.set(socket.id, userInfo);
+      addUserToTeams(socket, userInfo);
+
+      socket.emit('registered', { success: true, user: userInfo });
+      broadcastConnectedUsers();
+    }
   });
 
   socket.on('new-order-created', (orderData) => {
@@ -126,7 +172,6 @@ io.on('connection', (socket) => {
     }
   });
 
-
   socket.on('team-progress-updated', (progressData) => {
     console.log('📈 Team progress update received:', {
       order: progressData.orderNumber,
@@ -155,7 +200,7 @@ io.on('connection', (socket) => {
         dispatcherName,
         timestamp,
         updates,
-        orderData: updatedOrder, // This is the key - make sure updatedOrder is included
+        orderData: updatedOrder,
         message: `${team.toUpperCase()} team updated progress for ${itemName} in order #${orderNumber}`
       };
 
@@ -171,8 +216,7 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error handling team progress update:', error);
     }
-  });;
-
+  });
 
   socket.on('order-edited', (editData) => {
     console.log('✏️ Order edit notification received:', editData.orderNumber);
@@ -199,14 +243,12 @@ io.on('connection', (socket) => {
         message: `Order #${orderNumber} has been updated`
       };
 
-
       io.to('dispatchers').emit('order-updated', {
         ...baseNotification,
         orderData: order
       });
 
       const allAffectedTeams = new Set([...assignedTeams, ...previousAssignedTeams]);
-
 
       allAffectedTeams.forEach(teamName => {
         if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
@@ -233,90 +275,82 @@ io.on('connection', (socket) => {
     }
   });
 
- 
+  socket.on('order-deleted', (deleteData) => {
+    console.log('🗑️ Order delete notification received:', deleteData.orderNumber);
 
-  socket.on('join-order-tracking', (trackingData) => {
-    const { orderId, customerInfo } = trackingData;
-
-    if (orderId) {
-      const roomName = `order_${orderId}`;
-      socket.join(roomName);
-
-      // Store customer connection info
-      const customerData = {
-        socketId: socket.id,
+    try {
+      const {
         orderId,
-        customerInfo,
-        connected: true,
-        role: 'customer' // Add role for customer
+        orderNumber,
+        customerName,
+        dispatcherName,
+        timestamp,
+        assignedTeams = []
+      } = deleteData;
+
+      const baseNotification = {
+        type: 'order-deleted',
+        orderId,
+        orderNumber,
+        customerName,
+        dispatcherName,
+        timestamp,
+        message: `Order #${orderNumber} has been deleted`
       };
 
-      customerOrderRooms.set(socket.id, { orderId, roomName });
-      teamMembers.customers.add(socket.id);
-      connectedUsers.set(socket.id, customerData);
-
-      console.log(`🛍️ Customer joined order tracking room: ${roomName}`);
-
-      // Send current tracking data immediately
-      const currentTracking = getTrackingData(orderId);
-      if (currentTracking) {
-        socket.emit('order-status-updated', {
-          type: 'initial-status',
-          orderId,
-          ...currentTracking,
-          timestamp: new Date().toISOString()
-        });
-        console.log(`📤 Sent current tracking data to customer: ${orderId}`);
-      }
-
-      // Confirm connection to customer
-      socket.emit('tracking-connected', {
-        success: true,
-        orderId,
-        message: 'Connected to order tracking',
-        trackingData: currentTracking
+      // Send to all dispatchers
+      io.to('dispatchers').emit('order-deleted', {
+        ...baseNotification
       });
 
-      // Notify dispatchers about customer joining
-      socket.to('dispatchers').emit('customer-joined-tracking', {
-        orderId,
-        customerInfo,
-        timestamp: new Date().toISOString()
+      assignedTeams.forEach(teamName => {
+        if (teamMembers[teamName] && teamMembers[teamName].size > 0) {
+          io.to(teamName).emit('order-deleted', {
+            ...baseNotification,
+            message: `Order #${orderNumber} assigned to ${teamName.toUpperCase()} team has been deleted`
+          });
+
+          console.log(`📤 Delete notification sent to ${teamName} team`);
+        }
       });
+
+      console.log(`📤 Order delete notification sent to all teams and dispatchers`);
+
+    } catch (error) {
+      console.error('Error handling order delete notification:', error);
     }
   });
 
-  socket.on('tracking-update', (updateData) => {
-    console.log('📍 Tracking update received:', updateData);
-
+  socket.on('timeline-update', (updateData) => {
+    console.log('🚚 Timeline update received:', updateData.orderId);
+    
     try {
       const { orderId, trackingData } = updateData;
-
-      if (orderId) {
-        // Save to server storage
-        saveTrackingData(orderId, trackingData);
-
-        const roomName = `order_${orderId}`;
-
-        // Send to customers in the order room
-        io.to(roomName).emit('order-status-updated', {
-          type: 'tracking-update',
-          orderId,
-          ...trackingData,
-          timestamp: new Date().toISOString()
+      
+      // Send to customers tracking this specific order
+      if (teamMembers.customers.has(orderId)) {
+        const customerSockets = teamMembers.customers.get(orderId);
+        customerSockets.forEach(socketId => {
+          io.to(socketId).emit('tracking-updated', {
+            type: 'timeline-progress',
+            orderId,
+            ...trackingData,
+            timestamp: new Date().toISOString()
+          });
         });
-
-        console.log(`📤 Tracking update sent to room: ${roomName}`);
-
-        // Also send to dispatchers for monitoring
-        io.to('dispatchers').emit('customer-tracking-update', {
-          orderId,
-          trackingData,
-          timestamp: new Date().toISOString()
-        });
+        
+        console.log(`📤 Timeline update sent to ${customerSockets.size} customers for order ${orderId}`);
       }
+
+      // Also notify dispatchers for monitoring
+      io.to('dispatchers').emit('customer-timeline-update', {
+        orderId,
+        customersNotified: teamMembers.customers.get(orderId)?.size || 0,
+        updateData: trackingData
+      });
+
     } catch (error) {
-      console.error('Error handling tracking update:', error);
+      console.error('Error handling timeline update:', error);
     }
   });
 
@@ -330,13 +364,6 @@ io.on('connection', (socket) => {
       console.log(`🔌 Admin/Dispatcher joined dispatchers room: ${socket.id}`);
     }
 
-    // Add customer role handling
-    if (role === 'customer') {
-      teamMembers.customers.add(socket.id);
-      socket.join('customers');
-      console.log(`🔌 Customer joined customers room: ${socket.id}`);
-    }
-
     if (team && teamMembers[team]) {
       teamMembers[team].add(socket.id);
       socket.join(team);
@@ -345,11 +372,17 @@ io.on('connection', (socket) => {
   }
 
   function removeUserFromTeams(socketId) {
-    Object.values(teamMembers).forEach(team => team.delete(socketId));
-
-    // Clean up customer order room tracking
-    if (customerOrderRooms.has(socketId)) {
-      customerOrderRooms.delete(socketId);
+    // Handle regular team Sets
+    ['dispatchers', 'glass', 'caps', 'boxes', 'pumps'].forEach(teamName => {
+      teamMembers[teamName].delete(socketId);
+    });
+    
+    // Handle customers Map separately
+    for (const [orderId, customerSockets] of teamMembers.customers.entries()) {
+      customerSockets.delete(socketId);
+      if (customerSockets.size === 0) {
+        teamMembers.customers.delete(orderId);
+      }
     }
   }
 
@@ -365,51 +398,65 @@ io.on('connection', (socket) => {
     };
   }
 
-  socket.on('disconnect', () => {
-    console.log(`🔌 User disconnected: ${socket.id}`);
-
-    if (customerOrderRooms.has(socket.id)) {
-      const { orderId } = customerOrderRooms.get(socket.id);
-      console.log(`🛍️ Customer disconnected from order tracking: ${orderId}`);
-    }
-
-    removeUserFromTeams(socket.id);
-    connectedUsers.delete(socket.id);
-    broadcastConnectedUsers();
-  });
-
-  function getTrackingData(orderId) {
-    return trackingDataStore.get(orderId) || null;
-  }
-
-  // Add this helper function to save tracking data
-  function saveTrackingData(orderId, trackingData) {
-    trackingDataStore.set(orderId, {
-      ...trackingData,
-      lastUpdated: new Date().toISOString()
+  function broadcastConnectedUsers() {
+    const dispatchersList = Array.from(teamMembers.dispatchers).map(socketId => {
+      const user = connectedUsers.get(socketId);
+      return {
+        userId: user?.userId || socketId,
+        connected: true
+      };
     });
-    console.log(`💾 Saved tracking data for order: ${orderId}`);
-  }
 
+    const teamLists = {};
+    const allTeamMembers = [];
 
-  socket.on('disconnect', () => {
-    console.log(`🔌 User disconnected: ${socket.id}`);
-
-    // Handle customer order tracking cleanup
-    if (customerOrderRooms.has(socket.id)) {
-      const { orderId, customerInfo } = customerOrderRooms.get(socket.id);
-      console.log(`🛍️ Customer disconnected from order tracking: ${orderId}`);
-
-      // Notify dispatchers about customer leaving
-      socket.to('dispatchers').emit('customer-left-tracking', {
-        orderId,
-        customerInfo,
-        timestamp: new Date().toISOString()
+    ['glass', 'caps', 'boxes', 'pumps'].forEach(teamName => {
+      const teamUsers = Array.from(teamMembers[teamName]).map(socketId => {
+        const user = connectedUsers.get(socketId);
+        return {
+          userId: user?.userId || socketId,
+          team: teamName,
+          connected: true
+        };
       });
 
-      customerOrderRooms.delete(socket.id);
-    }
+      teamLists[teamName] = teamUsers;
+      allTeamMembers.push(...teamUsers);
+    });
 
+    // Send to dispatchers
+    io.to('dispatchers').emit('connected-users', {
+      dispatchers: dispatchersList,
+      teamMembers: allTeamMembers,
+      teams: teamLists
+    });
+
+    // Send to each team
+    Object.keys(teamLists).forEach(teamName => {
+      if (teamMembers[teamName].size > 0) {
+        io.to(teamName).emit('connected-users', {
+          teamMembers: teamLists[teamName],
+          dispatchers: dispatchersList
+        });
+      }
+    });
+  }
+
+  socket.on('disconnect', () => {
+    console.log(`🔌 User disconnected: ${socket.id}`);
+    
+    const userInfo = connectedUsers.get(socket.id);
+    if (userInfo && userInfo.role === 'customer' && userInfo.orderId) {
+      // Remove from customer tracking
+      const orderId = userInfo.orderId;
+      if (teamMembers.customers.has(orderId)) {
+        teamMembers.customers.get(orderId).delete(socket.id);
+        if (teamMembers.customers.get(orderId).size === 0) {
+          teamMembers.customers.delete(orderId);
+        }
+      }
+    }
+    
     removeUserFromTeams(socket.id);
     connectedUsers.delete(socket.id);
     broadcastConnectedUsers();

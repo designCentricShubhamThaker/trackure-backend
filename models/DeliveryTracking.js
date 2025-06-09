@@ -24,7 +24,7 @@ const DeliveryTrackingSchema = new mongoose.Schema({
   customerEmail: { type: String, required: true },
   orderDate: { type: Date, default: Date.now },
   estimatedDelivery: { type: String },
-  totalAmount: { type: Number },
+
   items: [{ 
     name: String,
     quantity: Number,
