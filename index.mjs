@@ -20,7 +20,7 @@ app.use(cors({
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "https://trackure-doms.vercel.app",
+    origin: "https://trackure-doms.vercel.app/",
     methods: ["GET", "POST"],
     credentials: true
   }
