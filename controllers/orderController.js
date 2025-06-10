@@ -1,9 +1,6 @@
 import Order from '../models/Order.js';
 import OrderItem from '../models/OrderItem.js';
 import GlassItem from '../models/GlassItem.js';
-import CapItem from '../models/CapItem.js';
-import BoxItem from '../models/BoxItem.js';
-import PumpItem from '../models/PumpItem.js';
 import mongoose from 'mongoose';
 
 export const getAllOrders = async (req, res, next) => {
@@ -27,7 +24,7 @@ export const getAllOrders = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass',
         },
       });
 
@@ -41,14 +38,13 @@ export const getAllOrders = async (req, res, next) => {
   }
 };
 
-
 export const getOrderById = async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass',
         },
       });
     
@@ -128,7 +124,7 @@ export const createOrder = async (req, res, next) => {
       console.log('Processing item:', item.name);
       
       const orderItem = new OrderItem({
-        order_number, // Fixed: was missing
+        order_number,
         name: item.name || `Item for ${order_number}`,
         team_assignments: {
           glass: []
@@ -139,7 +135,7 @@ export const createOrder = async (req, res, next) => {
       itemIds.push(orderItem._id);
       console.log('OrderItem saved with ID:', orderItem._id);
 
-      // Process glass items with correct field names
+      // Process glass items only
       if (item.glass && item.glass.length > 0) {
         for (const glassData of item.glass) {
           console.log('Processing glass data:', glassData);
@@ -151,8 +147,8 @@ export const createOrder = async (req, res, next) => {
 
           const glassItem = new GlassItem({
             itemId: orderItem._id,
-            order_number: order_number, // Fixed: correct field name
-            item_name: glassData.item_name, // Fixed: correct field name
+            order_number: order_number,
+            item_name: glassData.item_name,
             quantity: parseFloat(glassData.quantity),
             rate_per_1000: parseFloat(glassData.rate_per_1000),
             eop: parseFloat(glassData.eop) || 0,
@@ -166,23 +162,11 @@ export const createOrder = async (req, res, next) => {
             }
           });
           
-          console.log('Creating GlassItem with data:', {
-            itemId: orderItem._id,
-            order_number: order_number,
-            item_name: glassData.item_name,
-            quantity: parseFloat(glassData.quantity),
-            rate_per_1000: parseFloat(glassData.rate_per_1000),
-            eop: parseFloat(glassData.eop) || 0
-          });
-          
           await glassItem.save({ session });
           console.log('GlassItem saved with ID:', glassItem._id);
           orderItem.team_assignments.glass.push(glassItem._id);
         }
       }
-      
-      // Note: Removed caps, boxes, pumps processing since they're not in your current schema
-      // If you need them, you'll need to create separate schemas for them
       
       await orderItem.save({ session });
       console.log('OrderItem updated with assignments');
@@ -263,7 +247,7 @@ export const updateOrder = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass',
         },
       });
       
@@ -295,39 +279,23 @@ export const updateOrder = async (req, res, next) => {
       existingOrder.item_ids.forEach(item => {
         const itemKey = item.name;
         existingTrackingData.set(itemKey, {
-          glass: {},
-          caps: {},
-          boxes: {},
-          pumps: {}
+          glass: {}
         });
         
-        ['glass', 'caps', 'boxes', 'pumps'].forEach(teamType => {
-          if (item.team_assignments?.[teamType]) {
-            item.team_assignments[teamType].forEach(assignment => {
-              const assignmentKey = getAssignmentKey(assignment, teamType);
-              existingTrackingData.get(itemKey)[teamType][assignmentKey] = {
-                team_tracking: assignment.team_tracking,
-                status: assignment.status
-              };
-            });
-          }
-        });
+        if (item.team_assignments?.glass) {
+          item.team_assignments.glass.forEach(assignment => {
+            const assignmentKey = getAssignmentKey(assignment);
+            existingTrackingData.get(itemKey).glass[assignmentKey] = {
+              team_tracking: assignment.team_tracking,
+              status: assignment.status
+            };
+          });
+        }
       });
     }
 
-    function getAssignmentKey(assignment, teamType) {
-      switch (teamType) {
-        case 'glass':
-          return `${assignment.glass_name}_${assignment.neck_size}_${assignment.decoration}`;
-        case 'caps':
-          return `${assignment.cap_name}_${assignment.neck_size}_${assignment.material}`;
-        case 'boxes':
-          return `${assignment.box_name}_${assignment.approval_code}`;
-        case 'pumps':
-          return `${assignment.pump_name}_${assignment.neck_type}`;
-        default:
-          return assignment.name || 'default';
-      }
+    function getAssignmentKey(assignment) {
+      return `${assignment.item_name || assignment.name}_${assignment.team}`;
     }
 
     // Update order basic info
@@ -336,14 +304,11 @@ export const updateOrder = async (req, res, next) => {
     existingOrder.customer_name = customer_name || existingOrder.customer_name;
     existingOrder.order_status = order_status || existingOrder.order_status;
 
-    // *** FIX: Delete OrderItems using the OLD order number ***
+    // Delete OrderItems using the OLD order number
     const existingOrderItems = await OrderItem.find({ order_number: oldOrderNumber });
     
     for (const item of existingOrderItems) {
       await GlassItem.deleteMany({ itemId: item._id }, { session });
-      await CapItem.deleteMany({ itemId: item._id }, { session });
-      await BoxItem.deleteMany({ itemId: item._id }, { session });
-      await PumpItem.deleteMany({ itemId: item._id }, { session });
       await item.deleteOne({ session });
     }
 
@@ -355,13 +320,10 @@ export const updateOrder = async (req, res, next) => {
 
     for (const item of items) {
       const orderItem = new OrderItem({
-        order_number: existingOrder.order_number, // Use the NEW order number
+        order_number: existingOrder.order_number,
         name: item.name || `Item for ${existingOrder.order_number}`,
         team_assignments: {
-          glass: [],
-          caps: [],
-          boxes: [],
-          pumps: []
+          glass: []
         }
       });
       
@@ -369,26 +331,24 @@ export const updateOrder = async (req, res, next) => {
       itemIds.push(orderItem._id);
 
       const existingItemTracking = existingTrackingData.get(item.name) || {
-        glass: {}, caps: {}, boxes: {}, pumps: {}
+        glass: {}
       };
 
       // Handle Glass Items with preserved tracking
       if (item.glass && item.glass.length > 0) {
         for (const glassData of item.glass) {
-          const assignmentKey = getAssignmentKey(glassData, 'glass');
+          const assignmentKey = getAssignmentKey(glassData);
           const existingTracking = existingItemTracking.glass[assignmentKey];
           
           const glassItem = new GlassItem({
             itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            glass_name: glassData.glass_name,
-            quantity: glassData.quantity,
-            weight: glassData.weight,
-            neck_size: glassData.neck_size,
-            decoration: glassData.decoration,
-            decoration_no: glassData.decoration_no,
-            decoration_details: glassData.decoration_details,
-            team: glassData.team || 'Glass Manufacturing - Mumbai',
+            order_number: existingOrder.order_number,
+            item_name: glassData.item_name,
+            quantity: parseFloat(glassData.quantity),
+            rate_per_1000: parseFloat(glassData.rate_per_1000),
+            eop: parseFloat(glassData.eop) || 0,
+            team: glassData.team || 'Team 1',
+            estimated_delivery: glassData.estimated_delivery || '',
             status: existingTracking?.status || glassData.status || 'Pending',
             team_tracking: existingTracking?.team_tracking || glassData.team_tracking || {
               total_completed_qty: 0,
@@ -399,86 +359,6 @@ export const updateOrder = async (req, res, next) => {
           
           await glassItem.save({ session });
           orderItem.team_assignments.glass.push(glassItem._id);
-        }
-      }
-      
-      // Handle Cap Items with preserved tracking
-      if (item.caps && item.caps.length > 0) {
-        for (const capData of item.caps) {
-          const assignmentKey = getAssignmentKey(capData, 'caps');
-          const existingTracking = existingItemTracking.caps[assignmentKey];
-          
-          const capItem = new CapItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            cap_name: capData.cap_name,
-            neck_size: capData.neck_size,
-            quantity: capData.quantity,
-            process: capData.process,
-            material: capData.material,
-            team: capData.team || 'Cap Manufacturing - Delhi',
-            status: existingTracking?.status || capData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || capData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-          
-          await capItem.save({ session });
-          orderItem.team_assignments.caps.push(capItem._id);
-        }
-      }
-      
-      // Handle Box Items with preserved tracking
-      if (item.boxes && item.boxes.length > 0) {
-        for (const boxData of item.boxes) {
-          const assignmentKey = getAssignmentKey(boxData, 'boxes');
-          const existingTracking = existingItemTracking.boxes[assignmentKey];
-          
-          const boxItem = new BoxItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            box_name: boxData.box_name,
-            quantity: boxData.quantity,
-            approval_code: boxData.approval_code,
-            team: boxData.team || 'Box Manufacturing - Pune',
-            status: existingTracking?.status || boxData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || boxData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-          
-          await boxItem.save({ session });
-          orderItem.team_assignments.boxes.push(boxItem._id);
-        }
-      }
-      
-      // Handle Pump Items with preserved tracking
-      if (item.pumps && item.pumps.length > 0) {
-        for (const pumpData of item.pumps) {
-          const assignmentKey = getAssignmentKey(pumpData, 'pumps');
-          const existingTracking = existingItemTracking.pumps[assignmentKey];
-          
-          const pumpItem = new PumpItem({
-            itemId: orderItem._id,
-            orderNumber: existingOrder.order_number, // Use NEW order number
-            pump_name: pumpData.pump_name,
-            neck_type: pumpData.neck_type,
-            quantity: pumpData.quantity,
-            team: pumpData.team || 'Pump Manufacturing - Chennai',
-            status: existingTracking?.status || pumpData.status || 'Pending',
-            team_tracking: existingTracking?.team_tracking || pumpData.team_tracking || {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-          
-          await pumpItem.save({ session });
-          orderItem.team_assignments.pumps.push(pumpItem._id);
         }
       }
       
@@ -497,7 +377,7 @@ export const updateOrder = async (req, res, next) => {
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass',
         },
       });
     
@@ -535,9 +415,6 @@ export const deleteOrder = async (req, res, next) => {
     
     for (const item of orderItems) {
       await GlassItem.deleteMany({ itemId: item._id }, { session });
-      await CapItem.deleteMany({ itemId: item._id }, { session });      
-      await BoxItem.deleteMany({ itemId: item._id }, { session });
-      await PumpItem.deleteMany({ itemId: item._id }, { session });
       await item.deleteOne({ session });
     }
     await order.deleteOne({ session });
@@ -568,10 +445,7 @@ export const createOrderItem = async (req, res, next) => {
       ...req.body,
       order_number: order.order_number,
       team_assignments: {
-        glass: [],
-        caps: [],
-        boxes: [],
-        pumps: []
+        glass: []
       }
     });
     
@@ -584,7 +458,7 @@ export const createOrderItem = async (req, res, next) => {
     session.endSession();
     
     const populatedItem = await OrderItem.findById(orderItem._id)
-      .populate('team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps');
+      .populate('team_assignments.glass');
     
     res.status(201).json({ success: true, data: populatedItem });
   } catch (error) {
