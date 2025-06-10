@@ -14,15 +14,24 @@ app.use(express.json());
 const httpServer = createServer(app);
 
 app.use(cors({
-  origin: process.env.PROD_CLIENT_URL,
-  credentials: true
+  origin: '*',
+  credentials: false // credentials can't be used with wildcard origin
 }));
+
+// const io = new Server(httpServer, {
+//   cors: {
+//     // origin: "https://trackure-doms.vercel.app/",
+//     origin: "http://localhost:5173",
+//     methods: ["GET", "POST"],
+//     credentials: true
+//   }
+// });\
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "https://trackure-doms.vercel.app/",
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: '*',
+    methods: ['GET', 'POST'],
+    credentials: false
   }
 });
 
