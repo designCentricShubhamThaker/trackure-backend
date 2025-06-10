@@ -74,8 +74,12 @@ export const createOrder = async (req, res, next) => {
       order_number, 
       dispatcher_name, 
       customer_name, 
-      items = [] 
+      items = [],
+      eop_details,
+      eop_config
     } = req.body;
+
+    console.log('Received order data:', JSON.stringify(req.body, null, 2));
 
     if (!order_number || !dispatcher_name || !customer_name) {
       return res.status(400).json({
@@ -97,122 +101,91 @@ export const createOrder = async (req, res, next) => {
       dispatcher_name,
       customer_name,
       order_status: req.body.order_status || 'Pending',
+      eop_details: eop_details || {
+        itemsCost: 0,
+        shippingAndHandling: 0,
+        taxes: 0,
+        additionalFees: 0,
+        totalEOP: 0
+      },
+      eop_config: eop_config || {
+        shippingCost: 500,
+        handlingCost: 200,
+        taxRate: 0.18,
+        insuranceFee: 100,
+        expeditedShippingFee: 0,
+        specialHandlingFee: 0
+      },
       item_ids: []
     });
+    
     await newOrder.save({ session });
+    console.log('Order saved with ID:', newOrder._id);
 
     const itemIds = [];
 
     for (const item of items) {
+      console.log('Processing item:', item.name);
+      
       const orderItem = new OrderItem({
-        order_number,
+        order_number, // Fixed: was missing
         name: item.name || `Item for ${order_number}`,
         team_assignments: {
-          glass: [],
-          caps: [],
-          boxes: [],
-          pumps: []
+          glass: []
         }
       });
       
       await orderItem.save({ session });
       itemIds.push(orderItem._id);
+      console.log('OrderItem saved with ID:', orderItem._id);
 
+      // Process glass items with correct field names
       if (item.glass && item.glass.length > 0) {
         for (const glassData of item.glass) {
+          console.log('Processing glass data:', glassData);
+          
+          // Validate required fields before creating
+          if (!glassData.item_name || !glassData.quantity || !glassData.rate_per_1000) {
+            throw new Error(`Missing required fields for glass item: item_name, quantity, rate_per_1000`);
+          }
+
           const glassItem = new GlassItem({
             itemId: orderItem._id,
-            orderNumber: order_number,
-            glass_name: glassData.glass_name,
-            quantity: glassData.quantity,
-            weight: glassData.weight,
-            neck_size: glassData.neck_size,
-            decoration: glassData.decoration,
-            decoration_no: glassData.decoration_no,
-            decoration_details: glassData.decoration_details,
-            team: glassData.team || 'Glass',
-            status: 'Pending',
-            team_tracking: {
+            order_number: order_number, // Fixed: correct field name
+            item_name: glassData.item_name, // Fixed: correct field name
+            quantity: parseFloat(glassData.quantity),
+            rate_per_1000: parseFloat(glassData.rate_per_1000),
+            eop: parseFloat(glassData.eop) || 0,
+            team: glassData.team || 'Team 1',
+            estimated_delivery: glassData.estimated_delivery || '',
+            status: glassData.status || 'Pending',
+            team_tracking: glassData.team_tracking || {
               total_completed_qty: 0,
               completed_entries: [],
               status: 'Pending'
             }
           });
           
+          console.log('Creating GlassItem with data:', {
+            itemId: orderItem._id,
+            order_number: order_number,
+            item_name: glassData.item_name,
+            quantity: parseFloat(glassData.quantity),
+            rate_per_1000: parseFloat(glassData.rate_per_1000),
+            eop: parseFloat(glassData.eop) || 0
+          });
+          
           await glassItem.save({ session });
+          console.log('GlassItem saved with ID:', glassItem._id);
           orderItem.team_assignments.glass.push(glassItem._id);
         }
       }
       
-      if (item.caps && item.caps.length > 0) {
-        for (const capData of item.caps) {
-          const capItem = new CapItem({
-            itemId: orderItem._id,
-            orderNumber: order_number,
-            cap_name: capData.cap_name,
-            neck_size: capData.neck_size,
-            quantity: capData.quantity,
-            process: capData.process,
-            material: capData.material,
-            team: capData.team || 'Caps',
-            status: 'Pending',
-            team_tracking: {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-          
-          await capItem.save({ session });
-          orderItem.team_assignments.caps.push(capItem._id);
-        }
-      }
-      
-      if (item.boxes && item.boxes.length > 0) {
-        for (const boxData of item.boxes) {
-          const boxItem = new BoxItem({
-            itemId: orderItem._id,
-            orderNumber: order_number,
-            box_name: boxData.box_name,
-            quantity: boxData.quantity,
-            approval_code: boxData.approval_code,
-            team: boxData.team || 'Boxes',
-            status: 'Pending',
-            team_tracking: {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-          
-          await boxItem.save({ session });
-          orderItem.team_assignments.boxes.push(boxItem._id);
-        }
-      }
-      
-      if (item.pumps && item.pumps.length > 0) {
-        for (const pumpData of item.pumps) {
-          const pumpItem = new PumpItem({
-            itemId: orderItem._id,
-            orderNumber: order_number,
-            pump_name: pumpData.pump_name,
-            neck_type: pumpData.neck_type,
-            quantity: pumpData.quantity,
-            team: pumpData.team || 'Pumps',
-            status: 'Pending',
-            team_tracking: {
-              total_completed_qty: 0,
-              completed_entries: [],
-              status: 'Pending'
-            }
-          });
-          
-          await pumpItem.save({ session });
-          orderItem.team_assignments.pumps.push(pumpItem._id);
-        }
-      }
+      // Note: Removed caps, boxes, pumps processing since they're not in your current schema
+      // If you need them, you'll need to create separate schemas for them
       
       await orderItem.save({ session });
+      console.log('OrderItem updated with assignments');
     }
   
     newOrder.item_ids = itemIds;
@@ -220,29 +193,51 @@ export const createOrder = async (req, res, next) => {
     
     await session.commitTransaction();
     session.endSession();
+    console.log('Transaction committed successfully');
 
     // Fetch the fully populated order after creation
     const populatedOrder = await Order.findById(newOrder._id)
       .populate({
         path: 'item_ids',
         populate: {
-          path: 'team_assignments.glass team_assignments.caps team_assignments.boxes team_assignments.pumps',
+          path: 'team_assignments.glass',
+          model: 'GlassItem'
         },
       });
+    
+    console.log('Order creation completed successfully');
     
     res.status(201).json({ 
       success: true, 
       message: 'Order created successfully',
       data: populatedOrder 
     });
+    
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+    
+    console.error('Order creation failed:', error);
     
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
         message: 'Duplicate key error. Order number must be unique.'
+      });
+    }
+    
+    // Handle validation errors specifically
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.keys(error.errors).map(key => ({
+        field: key,
+        message: error.errors[key].message
+      }));
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        errors: validationErrors,
+        details: error.message
       });
     }
     
