@@ -57,6 +57,10 @@ const GlassItemSchema = new mongoose.Schema({
     enum: ['Pending', 'In Progress', 'Completed'],
     default: 'Pending'
   },
+  qc_status: {
+  type: String, 
+  default: 'Pending'
+},
 
   team_tracking: teamTrackingSchema
 }, { timestamps: true });

@@ -8,7 +8,7 @@ export const getGlassOrders = async (req, res, next) => {
   try {
     const { orderType } = req.query;
     let filter = {};
-    
+
     if (orderType === 'pending') {
       filter.order_status = 'Pending';
     } else if (orderType === 'completed') {
@@ -58,7 +58,7 @@ export const getGlassOrders = async (req, res, next) => {
 
 export const updateGlassTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
-  
+
   try {
     const { orderNumber, itemId, updates, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
 
@@ -101,14 +101,14 @@ export const updateGlassTracking = async (req, res, next) => {
 
       for (const update of updatesArray) {
         const assignment = glassAssignments.find(a => a._id.toString() === update.assignmentId);
-        
+
         if (!assignment) {
           throw new Error(`Glass assignment not found: ${update.assignmentId}`);
         }
 
         const currentCompleted = assignment.team_tracking?.total_completed_qty || 0;
         const remaining = assignment.quantity - currentCompleted;
-        
+
         if (update.newEntry.quantity > remaining) {
           throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${assignment.glass_name}`);
         }
@@ -226,13 +226,19 @@ export const updateGlassTracking = async (req, res, next) => {
         ]).session(session);
 
         const orderResult = orderCompletionResult[0];
-        if (orderResult?.allItemsCompleted && orderResult.order_status !== 'Completed') {
-          await Order.findOneAndUpdate(
-            { order_number: orderNumber },
-            { $set: { order_status: 'Completed' } },
-            { session }
-          );
+
+        if (orderResult?.allItemsCompleted) {
+          const orderDoc = await Order.findOne({ order_number: orderNumber }).session(session);
+
+          if (orderDoc.qc_status === 'Completed' && orderDoc.order_status !== 'Completed') {
+            await Order.findOneAndUpdate(
+              { order_number: orderNumber },
+              { $set: { order_status: 'Completed' } },
+              { session }
+            );
+          }
         }
+
       }
     });
 
@@ -272,14 +278,14 @@ export const updateGlassTracking = async (req, res, next) => {
 
   } catch (error) {
     console.error('Error updating glass tracking:', error);
-    
+
     if (error.message.includes('not found') || error.message.includes('exceeds')) {
       return res.status(400).json({
         success: false,
         message: error.message
       });
     }
-    
+
     next(error);
   } finally {
     await session.endSession();
