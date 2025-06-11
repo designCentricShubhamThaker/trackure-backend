@@ -65,15 +65,16 @@ export const updateGlassTracking = async (req, res, next) => {
     const isBulkUpdate = Array.isArray(updates) && updates.length > 0;
     const isSingleUpdate = assignmentId && newEntry && newTotalCompleted !== undefined && newStatus;
     const isQcUpdate = qc_status && orderNumber && !itemId; // QC update only needs orderNumber and qc_status
+    const isQcWithGlassUpdate = qc_status && orderNumber && itemId; // NEW: QC update with glass tracking
 
-    if (!orderNumber || (!isBulkUpdate && !isSingleUpdate && !isQcUpdate)) {
+    if (!orderNumber || (!isBulkUpdate && !isSingleUpdate && !isQcUpdate && !isQcWithGlassUpdate)) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields. Provide either: (orderNumber, itemId, updates[]) OR (orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus) OR (orderNumber, qc_status)'
+        message: 'Missing required fields. Provide either: (orderNumber, itemId, updates[]) OR (orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus) OR (orderNumber, qc_status) OR (orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus, qc_status)'
       });
     }
 
-    // Handle QC status update only
+    // Handle QC status update only (existing logic)
     if (isQcUpdate) {
       await session.withTransaction(async () => {
         await Order.findOneAndUpdate(
@@ -84,7 +85,7 @@ export const updateGlassTracking = async (req, res, next) => {
 
         // Check if order should be completed (both glass and QC completed)
         const orderDoc = await Order.findOne({ order_number: orderNumber }).session(session);
-        
+       
         const orderCompletionResult = await Order.aggregate([
           { $match: { order_number: orderNumber } },
           {
@@ -141,7 +142,7 @@ export const updateGlassTracking = async (req, res, next) => {
         ]).session(session);
 
         const orderResult = orderCompletionResult[0];
-        
+       
         if (orderResult?.allItemsCompleted && qc_status === 'Completed' && orderDoc.order_status !== 'Completed') {
           await Order.findOneAndUpdate(
             { order_number: orderNumber },
@@ -209,13 +210,16 @@ export const updateGlassTracking = async (req, res, next) => {
           throw new Error(`Quantity ${update.newEntry.quantity} exceeds remaining quantity ${remaining} for assignment ${assignment.glass_name}`);
         }
 
+        // Update the glass item with new tracking data
         await GlassItem.findByIdAndUpdate(
           update.assignmentId,
           {
             $set: {
               'team_tracking.total_completed_qty': update.newTotalCompleted,
               'team_tracking.last_updated': new Date(),
-              status: update.newStatus
+              status: update.newStatus,
+              // NEW: Update QC status if provided
+              ...(qc_status && { qc_status: qc_status })
             },
             $push: {
               'team_tracking.completed_entries': {
@@ -326,15 +330,28 @@ export const updateGlassTracking = async (req, res, next) => {
         if (orderResult?.allItemsCompleted) {
           const orderDoc = await Order.findOne({ order_number: orderNumber }).session(session);
 
-          if (orderDoc.qc_status === 'Completed' && orderDoc.order_status !== 'Completed') {
+          // NEW: Check if QC status should be updated for order-level completion
+          if (qc_status === 'Completed' && orderDoc.order_status !== 'Completed') {
+            await Order.findOneAndUpdate(
+              { order_number: orderNumber },
+              { $set: { order_status: 'Completed', qc_status: qc_status } },
+              { session }
+            );
+          } else if (orderDoc.qc_status === 'Completed' && orderDoc.order_status !== 'Completed') {
             await Order.findOneAndUpdate(
               { order_number: orderNumber },
               { $set: { order_status: 'Completed' } },
               { session }
             );
+          } else if (qc_status && !orderDoc.qc_status) {
+            // Update order QC status if not already set
+            await Order.findOneAndUpdate(
+              { order_number: orderNumber },
+              { $set: { qc_status: qc_status } },
+              { session }
+            );
           }
         }
-
       }
     });
 
@@ -365,7 +382,7 @@ export const updateGlassTracking = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      message: 'Glass tracking updated successfully',
+      message: `Glass tracking${qc_status ? ' and QC status' : ''} updated successfully`,
       data: {
         order: responseData,
         updatedAssignments: isBulkUpdate ? updatedAssignments : updatedAssignments[0]
