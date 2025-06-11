@@ -60,15 +60,111 @@ export const updateGlassTracking = async (req, res, next) => {
   const session = await mongoose.startSession();
 
   try {
-    const { orderNumber, itemId, updates, assignmentId, newEntry, newTotalCompleted, newStatus } = req.body;
+    const { orderNumber, itemId, updates, assignmentId, newEntry, newTotalCompleted, newStatus, qc_status } = req.body;
 
     const isBulkUpdate = Array.isArray(updates) && updates.length > 0;
     const isSingleUpdate = assignmentId && newEntry && newTotalCompleted !== undefined && newStatus;
+    const isQcUpdate = qc_status && orderNumber && !itemId; // QC update only needs orderNumber and qc_status
 
-    if (!orderNumber || !itemId || (!isBulkUpdate && !isSingleUpdate)) {
+    if (!orderNumber || (!isBulkUpdate && !isSingleUpdate && !isQcUpdate)) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields. Provide either: (orderNumber, itemId, updates[]) OR (orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus)'
+        message: 'Missing required fields. Provide either: (orderNumber, itemId, updates[]) OR (orderNumber, itemId, assignmentId, newEntry, newTotalCompleted, newStatus) OR (orderNumber, qc_status)'
+      });
+    }
+
+    // Handle QC status update only
+    if (isQcUpdate) {
+      await session.withTransaction(async () => {
+        await Order.findOneAndUpdate(
+          { order_number: orderNumber },
+          { $set: { qc_status: qc_status } },
+          { session }
+        );
+
+        // Check if order should be completed (both glass and QC completed)
+        const orderDoc = await Order.findOne({ order_number: orderNumber }).session(session);
+        
+        const orderCompletionResult = await Order.aggregate([
+          { $match: { order_number: orderNumber } },
+          {
+            $lookup: {
+              from: 'orderitems',
+              localField: 'item_ids',
+              foreignField: '_id',
+              as: 'items',
+              pipeline: [
+                {
+                  $lookup: {
+                    from: 'glassitems',
+                    localField: 'team_assignments.glass',
+                    foreignField: '_id',
+                    as: 'glass_assignments'
+                  }
+                }
+              ]
+            }
+          },
+          {
+            $addFields: {
+              allItemsCompleted: {
+                $allElementsTrue: {
+                  $map: {
+                    input: '$items',
+                    as: 'item',
+                    in: {
+                      $cond: {
+                        if: { $gt: [{ $size: '$$item.glass_assignments' }, 0] },
+                        then: {
+                          $allElementsTrue: {
+                            $map: {
+                              input: '$$item.glass_assignments',
+                              as: 'assignment',
+                              in: {
+                                $gte: [
+                                  { $ifNull: ['$$assignment.team_tracking.total_completed_qty', 0] },
+                                  '$$assignment.quantity'
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        else: true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          { $project: { allItemsCompleted: 1 } }
+        ]).session(session);
+
+        const orderResult = orderCompletionResult[0];
+        
+        if (orderResult?.allItemsCompleted && qc_status === 'Completed' && orderDoc.order_status !== 'Completed') {
+          await Order.findOneAndUpdate(
+            { order_number: orderNumber },
+            { $set: { order_status: 'Completed' } },
+            { session }
+          );
+        }
+      });
+
+      const updatedOrder = await Order.findOne({ order_number: orderNumber }).lean();
+
+      return res.status(200).json({
+        success: true,
+        message: 'QC status updated successfully',
+        data: { order: updatedOrder }
+      });
+    }
+
+    // Rest of the existing glass tracking logic...
+    if (!itemId) {
+      return res.status(400).json({
+        success: false,
+        message: 'itemId is required for glass tracking updates'
       });
     }
 
